@@ -1,0 +1,195 @@
+创建数据库
+# coding=gbk
+#！ /user/bin/env python
+import sqlite3
+con = sqlite3.connect('collecttem.db')
+c = con.cursor()
+sql_str = '''
+CREATE TABLE DEVICE(
+ID INTEGER PRIMARY KEY       NOT NULL,
+temp      INTEGER
+);
+'''
+c.execute(sql_str)
+con.commit()
+con.close()
+读取数据库数据
+# coding=gbk
+#！ /user/bin/env python
+import sqlite3
+con = sqlite3.connect('collecttem.db')
+c = con.cursor()
+sql_str = "SELECT * FROM DEVICE;"
+c.execute(sql_str)
+for row in c:
+    print(row)
+con.close()
+温度采集保存到本地内存文件
+#-*- conding:utf-8 -*-
+# coding=utf-8
+import serial
+import time
+import json
+import threading
+from time import ctime,sleep
+import queue
+q = queue.Queue()
+#ser = serial.Serial("/dev/ttyUSB0",115200)
+ser = serial.Serial("COM5", 115200, timeout=5)
+def Zigbee():
+    while True:
+        count = ser.inWaiting()
+        if count != 0:
+            recv = ser.readline()
+            ser.flushInput()     # 清空接收缓冲区
+            q.put(recv.decode()) #将值放入队列中
+            data = recv.decode('utf-8')
+            print(recv.decode())
+        sleep(0.1)
+
+def Zigbee_json ():
+    global recv
+    while True:
+        if q.empty():     #如果队列为空，返回True,反之。。
+            pass
+        else:
+            data = q.get('gbk')  #获取队列的值
+            tmp_output = open('E:/savedata/wendu.txt','w')
+            tmp_output.write(data)
+            tmp_output.flush()
+            tmp_output.close()
+            print(data)
+            sleep(1)
+            
+    
+threads = []
+t1 = threading.Thread(target = Zigbee)
+threads.append(t1)
+t2 = threading.Thread(target = Zigbee_json)
+threads.append(t2)
+if __name__ == '__main__':
+    for t in threads:
+        t.start()   #启动线程
+    t1.join()  #t1t2线程并行运行
+    t2.join()
+    while True:
+        sleep(2)
+上传onenet平台
+#-*-coding:utf-8 -*-
+from __future__ import print_function
+import time
+import paho.mqtt.client as mqtt
+import struct
+import json
+import datetime
+import sqlite3
+# CONNECT 方式：
+# client_id:     DEV_ID
+# username:  PRO_ID
+# password:   AUTHINFO(鉴权信息)
+# 可以连接上设备云，CONNECT 和 CONNACK握手成功
+# temperature:已创建的一个数据流
+#更多请查阅OneNet官方mqtt文档与paho-mqtt开发文档
+
+#修改成自己的即可
+DEV_ID = "659651428" #设备ID
+PRO_ID = "393494" #产品ID
+AUTH_INFO = "k3Usw7bQTAXT9hcmO2nCTSCaWp8="  #APIKEY
+temperature=''
+def read():
+    global temperature
+    with open('E:/savedata/wendu.txt') as file:
+        temperature= float(file.read())
+
+    #humidity= float(20)
+time1 = datetime.datetime.now().isoformat()
+
+TYPE_JSON = 0x01
+TYPE_FLOAT = 0x17
+
+#定义上传数据的json格式  该格式是oneNET规定好的  按格式修改其中变量即可
+# body = {
+#         "datastreams":[
+#                 {
+#                     "id":"temp",  #对应OneNet的数据流名称
+#                     "datapoints":[
+#                         {
+#                             "at":time , #数据提交时间，这里可通过函数来获取实时时间
+#                             "value":temperature#数据值
+#                             }
+#                         ]
+#                     }
+#                 ]
+#             }
+
+
+def build_payload(type, payload):
+    datatype = type
+    packet = bytearray()
+    packet.extend(struct.pack("!B", datatype))
+    if isinstance(payload, str):
+        udata = payload.encode('utf-8')
+        length = len(udata)
+        packet.extend(struct.pack("!H" + str(length) + "s", length, udata))
+    return packet
+
+# 当客户端收到来自服务器的CONNACK响应时的回调。也就是申请连接，服务器返回结果是否成功等
+def on_connect(client, userdata, flags, rc):
+    read()
+    time.sleep(3)
+    print("连接结果:" + mqtt.connack_string(rc))
+    #上传数据
+    body = {
+        "datastreams": [
+            {
+                "id": "temp",  # 对应OneNet的数据流名称
+                "datapoints": [
+                    {
+                        "at": time1,  # 数据提交时间，这里可通过函数来获取实时时间
+                        "value": temperature  # 数据值
+                    }
+                ]
+            }
+        ]
+    }
+
+    json_body = json.dumps(body)
+    packet = build_payload(TYPE_JSON, json_body)
+    client.publish("$dp", packet, qos=1)  #qos代表服务质量
+    con = sqlite3.connect('collecttem.db')
+    c = con.cursor()
+    c.execute("INSERT INTO DEVICE (temp)values ('{}')".format(temperature))
+    con.commit()
+    con.close()
+
+
+time.sleep(0.1)  # 延时0.1秒，免得CPU出问题
+
+# 从服务器接收发布消息时的回调。
+def on_message(client, userdata, msg):
+    print("温度:"+str(msg.payload,'utf-8')+"℃")
+
+
+#当消息已经被发送给中间人，on_publish()回调将会被触发
+def on_publish(client, userdata, mid):
+    print("mid:" + str(mid))
+    client.on_connect = on_connect
+    client.on_publish = on_publish
+    client.on_message = on_message
+    client.username_pw_set(username=PRO_ID, password=AUTH_INFO)
+    client.connect('183.230.40.39', port=6002, keepalive=120)
+
+def main():
+    client = mqtt.Client(client_id=DEV_ID, protocol=mqtt.MQTTv311)
+    client.on_connect = on_connect
+    client.on_publish = on_publish
+    client.on_message = on_message
+    client.username_pw_set(username=PRO_ID, password=AUTH_INFO)
+    client.connect('183.230.40.39', port=6002, keepalive=120)
+    client.loop_forever()
+if __name__ == '__main__':
+    while True:
+        
+        main()
+
+
